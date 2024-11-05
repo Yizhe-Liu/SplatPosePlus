@@ -12,7 +12,7 @@ by Yizhe Liu, Yan Song Hu, Yuhao Chen, John Zelek, which was accepted to the ECC
 
 
 ## Installation Setup
-We have only tested on a Linux machine.
+We have tested on a Linux machine with Torch 2.5 and Cuda 12.4. If you use gcc-13, please include \<cstdint\> in "submodules/diff-gaussian-rasterization/cuda_rasterizer/rasterizer_impl.h"
 
 ```shell
 # (1) Cloning the repository and the submodules recursively
@@ -20,8 +20,10 @@ git clone git@github.com:Yizhe-Liu/SplatPosePlus.git --recursive
 cd SplatPosePlus
 
 # (2) Create the environment with necessary CUDA & PyTorch frameworks
+export CUDA_HOME=/usr/local/cuda
 conda env create --file environment.yml 
 conda activate splatposeplus
+pip install -e submodules/Hierarchical-Localization/
 
 # (3) Download MAD-Sim Dataset
 gdown 1XlW5v_PCXMH49RSKICkskKjd2A5YDMQq

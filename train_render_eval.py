@@ -4,6 +4,7 @@ import yaml
 import json
 import pycolmap
 import numpy as np
+import shutil
 from tqdm import tqdm
 from pathlib import Path
 from glob import glob
@@ -34,12 +35,12 @@ pre_parser = ArgumentParser(description="Parameters of the LEGO training run")
 pre_parser.add_argument("-c", "-classname", metavar="c", type=str, help="current class to run experiments on", default="01Gorilla")
 pre_parser.add_argument("-seed", type=int, help="seed for random behavior", default=0)
 pre_parser.add_argument("-iters", type=int, help="number of training iterations for 3DGS", default=15000)
-pre_parser.add_argument("-train", type=int, help="whether we train or look for a saved model", default=1)                   
-pre_parser.add_argument("-skip_loc", action='store_true')  
-pre_parser.add_argument("-v", type=int, help="verbosity", default=0)                        
-pre_parser.add_argument("-data_path", type=str, help="preprocessed dataset path", default="MAD-Sim_3dgs/")         
+pre_parser.add_argument("-skip_loc", help='skip localization', action='store_true')                 
+pre_parser.add_argument("-skip_train", help='skip training 3dgs', action='store_true')                        
+pre_parser.add_argument("-data_path", type=str, help="preprocessed dataset path", default="MAD-Sim/")         
 pre_parser.add_argument("-n_match", type=int, default=15, help="num of matches for netvlad image retrieval")    
-pre_parser.add_argument("-trainset_ratio", type=float, default=1.0, help="percentage of training samples")                        
+pre_parser.add_argument("-trainset_ratio", type=float, default=1.0, help="percentage of training samples")     
+pre_parser.add_argument("-feature_ext", type=str, default='superpoint', help="feature extractor", choices=["superpoint", "aliked"])                  
 
 lego_args = pre_parser.parse_args()
 data_path = os.path.join(lego_args.data_path, lego_args.c)
@@ -51,12 +52,9 @@ end = torch.cuda.Event(enable_timing=True)
 
 loc_time, sfm_time = 0, 0
 if not lego_args.skip_loc: # create sfm & localize testset
-    ds_path = Path('MAD-Sim/')
-    scene   = lego_args.c
-    scene_path = ds_path/scene
+    scene_path = Path(data_path)
     image_path = scene_path/'images'
     outputs = scene_path/'outputs'
-    #if os.path.exists(outputs): rmtree(outputs)
     if os.path.exists(image_path): rmtree(image_path)
     os.makedirs(image_path)
     os.symlink('../train/', image_path/'train/')
@@ -65,8 +63,7 @@ if not lego_args.skip_loc: # create sfm & localize testset
     loc_pairs = outputs/'loc_pairs.txt'
     os.makedirs(outputs, exist_ok=True)
     with open(os.path.join(scene_path, 'transforms.json')) as f: flist = json.load(f)
-
-    first_img = Image.open(scene_path/'train/good/000.png')
+    first_img = Image.open(scene_path/'train/good/0.png')
     (w, h), cam_angle_x = first_img.size, flist['camera_angle_x']
     focal = 0.5*w/np.tan(0.5*cam_angle_x)
     camera_id = 1  # increment for each new camera
@@ -77,10 +74,14 @@ if not lego_args.skip_loc: # create sfm & localize testset
         c2w[:3, 1:3] *= -1  # change from OpenGL/Blender camera axes (Y up, Z back) to COLMAP (Y down, Z forward)
         w2c = np.linalg.inv(c2w)
         pose = pycolmap.Rigid3d(w2c[:3])
-        im = pycolmap.Image(f'train/good/{i:03}.png', [], pose, camera_id, i+1)
+        im = pycolmap.Image(f'train/good/{i}.png', [], pose, camera_id, i+1)
         im.registered = True
         rec.add_image(im)
+        frame["file_path"] = frame["file_path"][:-4]
     rec.write(outputs)
+    with open(os.path.join(scene_path, 'transforms_train.json'), 'w') as f: f.write(json.dumps(flist))
+    flist["frames"] = flist["frames"][::20]
+    with open(os.path.join(scene_path, 'transforms_test.json'), 'w') as f: f.write(json.dumps(flist))
 
     query_list_with_intrinsics_path = scene_path / 'query_list_with_intrinsics.txt'
     intrinsics_str = f' SIMPLE_PINHOLE {w} {h} {focal} {w/2} {h/2}\n'
@@ -89,14 +90,18 @@ if not lego_args.skip_loc: # create sfm & localize testset
         fp.writelines(query_list_with_intrinsics)
 
     retrieval_conf = extract_features.confs["netvlad"]
-    feature_conf = extract_features.confs["superpoint_aachen"]
-    matcher_conf = match_features.confs["superpoint+lightglue"]
+    if lego_args.feature_ext == 'superpoint':
+        feature_conf = extract_features.confs["superpoint_aachen"]
+        matcher_conf = match_features.confs["superpoint+lightglue"]
+    else:
+        feature_conf = extract_features.confs["aliked-n16"]
+        matcher_conf = match_features.confs["aliked+lightglue"]
 
     start.record()
     global_descriptors = extract_features.main(retrieval_conf, image_path, outputs)
     features = extract_features.main(feature_conf, image_path, outputs)
-    pairs_from_retrieval.main(global_descriptors, ref_pairs, num_matched=15, query_prefix='train', db_prefix='train')
-    pairs_from_retrieval.main(global_descriptors, loc_pairs, num_matched=15, query_prefix='test', db_prefix='train')
+    pairs_from_retrieval.main(global_descriptors, ref_pairs, num_matched=lego_args.n_match, query_prefix='train', db_prefix='train')
+    pairs_from_retrieval.main(global_descriptors, loc_pairs, num_matched=lego_args.n_match, query_prefix='test', db_prefix='train')
     sfm_matches = match_features.main(matcher_conf, ref_pairs, feature_conf["output"], outputs)
     loc_matches = match_features.main(matcher_conf, loc_pairs, feature_conf["output"], outputs)
     rec = triangulation.main(outputs, outputs, image_path, ref_pairs, features, sfm_matches)
@@ -104,7 +109,7 @@ if not lego_args.skip_loc: # create sfm & localize testset
     sfm_time = start.elapsed_time(end)
     rec.write(outputs)
     xyz, rgb, _ = read_points3D_binary(outputs/'points3D.bin')
-    storePly(Path(data_path)/'points3d.ply', xyz, rgb)
+    storePly(Path(data_path)/'points3d.ply', xyz, rgb) # store ply for 3DGS
     results = scene_path/'query_poses.txt'
 
     start.record()
@@ -120,10 +125,12 @@ if not lego_args.skip_loc: # create sfm & localize testset
     end.record()
     loc_time = start.elapsed_time(end)/len(query_list_with_intrinsics)
 
-if lego_args.train != 0:
+train_time = 0 
+if lego_args.skip_train: print("skipping training!")
+else:
     # Set up command line argument parser
     training_args = ["-w", "-s", data_path, "-m", result_dir, "--iterations", str(lego_args.iters), 
-                     "--densification_interval", "1000"] #, "--densify_until_iter", "15000", "--sh_degree", "3"]
+                     "--densification_interval", "1000"] 
     print("training args: ", training_args)
     parser = ArgumentParser(description="3DGS Training script parameters")
     lp = ModelParams(parser)
@@ -150,12 +157,9 @@ if lego_args.train != 0:
     end.record()
     torch.cuda.synchronize()
     train_time = start.elapsed_time(end)
-else:
-    train_time = 0 
-    print("skipping training!")
+
     
-def main_pose_estimation(cur_class, model_dir, data_dir=None):
-    data_dir = "MAD-Sim/" if data_dir is None else data_dir
+def syn_pseudo_ref_imgs(cur_class, model_dir, data_dir):
     trainset = DefectDataset(data_dir, cur_class, "train", True, True)
     train_imgs = torch.cat([a[0][None,...] for a in trainset], dim=0)
     train_imgs = torch.movedim(torch.nn.functional.interpolate(train_imgs, (400,400)), 1, 3).numpy()
@@ -204,8 +208,9 @@ def main_pose_estimation(cur_class, model_dir, data_dir=None):
             times += start.elapsed_time(end)
     return syn_imgs, ref_imgs, all_labels, gt_masks, times/len(testset)
 
-syn_imgs, ref_imgs, all_labels, gt_masks, nvs_time = main_pose_estimation(lego_args.c, result_dir)
+syn_imgs, ref_imgs, all_labels, gt_masks, nvs_time = syn_pseudo_ref_imgs(lego_args.c, result_dir, lego_args.data_path)
 
+# load pre-trained effnet
 with open("PAD_utils/config_effnet.yaml") as f:
     mad_config = EasyDict(yaml.load(f, Loader=yaml.FullLoader))
 M = ModelHelper(update_config(mad_config).net)
@@ -220,12 +225,12 @@ upscale = v2.Resize(224)
 start.record()
 with torch.no_grad():
     ref, syn = tf_img(torch.stack(ref_imgs)), tf_img(torch.stack(syn_imgs)) # n by 3 by 224 by 224
-    scores = v2.GaussianBlur(9, 4)(CR(ref, syn).sum(1) + sum([upscale(CR(*x).sum(1)) for x in zip(M(ref), M(syn))])).cpu().numpy()
+    scores = v2.GaussianBlur(9, 4)(CR(ref, syn).sum(1) + sum([upscale(CR(*x).sum(1)) for x in zip(M(ref), M(syn))]))
 end.record()
 torch.cuda.synchronize()
 cnn_time = start.elapsed_time(end)/len(syn_imgs)
-
-scores = ((scores - scores.min()) / (scores.max() - scores.min()))
+scores_min = scores.min()
+scores = ((scores - scores_min) / (scores.max() - scores_min)).cpu().numpy()
 gt_mask = v2.Resize(224, interpolation=v2.InterpolationMode.NEAREST)(torch.stack(gt_masks)).cpu().numpy()
 precision, recall, thresholds = precision_recall_curve(gt_mask.ravel(), scores.ravel())
 a, b = 2 * precision * recall, precision + recall

@@ -19,7 +19,6 @@ dependencies:
   - pip:
     - submodules/diff-gaussian-rasterization
     - submodules/simple-knn
-    - submodules/Hierarchical-Localization/
     - opencv-python
     - easydict
     - einops

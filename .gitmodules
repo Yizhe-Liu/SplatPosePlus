@@ -4,3 +4,6 @@
 [submodule "submodules/simple-knn"]
 	path = submodules/simple-knn
 	url = https://gitlab.inria.fr/bkerbl/simple-knn.git
+[submodule "submodules/Hierarchical-Localization"]
+	path = submodules/Hierarchical-Localization
+	url = git@github.com:Yizhe-Liu/Hierarchical-Localization.git

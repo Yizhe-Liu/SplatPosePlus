@@ -11,7 +11,7 @@
 
 import os
 import torch
-from random import randint
+from random import choice, sample
 from gaussian_splatting.utils.loss_utils import l1_loss, ssim
 from gaussian_splatting.gaussian_renderer import render, network_gui
 import sys
@@ -28,7 +28,7 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, trainset_ratio=1):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -44,7 +44,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    viewpoint_stack = None
+    viewpoint_stack = scene.getTrainCameras()
+    viewpoint_stack = sample(viewpoint_stack, round(trainset_ratio*len(viewpoint_stack)))
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -73,9 +74,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             gaussians.oneupSHdegree()
 
         # Pick a random Camera
-        if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
-        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+        viewpoint_cam = choice(viewpoint_stack)
 
         # Render
         if (iteration - 1) == debug_from:
@@ -213,7 +212,7 @@ if __name__ == "__main__":
     print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)
-    safe_state(args.quiet)
+    safe_state(args.quiet, 0)
 
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)

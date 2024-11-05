@@ -562,20 +562,13 @@ class DefectDataset(Dataset):
         return mask
 
     def __getitem__(self, index):
-        
         with open(self.images[index], 'rb') as f:
             img = Image.open(f).convert('RGB')
-        img = self.image_transforms(img)
-        label = self.labels[index]
-
-        ret = [img, label]
+        ret = [self.image_transforms(img), self.labels[index]]
         if self.set == 'test' and self.get_mask:
-            true_mask = self.grab_mask_from_file(self.masks[index], index)
-            ret.append(true_mask)
+            ret.append(self.grab_mask_from_file(self.masks[index], index))
         elif self.get_mask:
-            true_mask = torch.zeros(self.width, self.height)
-            ret.append(true_mask)
-
+            ret.append(torch.zeros(self.width, self.height))
         return ret
 
     def insert_pretrained_params(self, params : torch.Tensor):
@@ -646,7 +639,7 @@ class DatasetPose(Dataset):
 
         trans_entry = self.camera_transforms["frames"][index]
         transform_matrix = torch.tensor(trans_entry["transform_matrix"])
-        qu =  matrix_to_quaternion(transform_matrix[:3,:3])
+        qu = matrix_to_quaternion(transform_matrix[:3,:3])
         translation_params = transform_matrix[:3,3]
         transform_params = torch.cat((qu, translation_params))
 
